@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>領収書・レシート解析 Ver 1.1</title>
+  <title>領収書・レシート解析 Ver 1.2</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
     if (window.pdfjsLib) {
@@ -82,7 +82,7 @@
 
 <div class="container">
   <header>
-    <h1>領収書・レシート解析 <span style="font-size: 0.8rem; font-weight: normal; color: var(--text-muted);">Ver 1.1</span></h1>
+    <h1>領収書・レシート解析 <span style="font-size: 0.8rem; font-weight: normal; color: var(--text-muted);">Ver 1.2</span></h1>
     <div class="api-config">
       <input type="password" id="apiKeyInput" placeholder="Gemini API Key を入力" />
       <button type="button" class="btn btn-outline" id="saveKeyBtn" style="padding: 8px 16px; font-size: 0.85rem;">保存</button>
@@ -224,24 +224,46 @@
     });
   }
 
-  async function renderPdfToOptimizedJpeg(file) {
+  // PDF全ページをレンダリングし、縦1枚に結合して軽量JPEG化
+  async function renderAllPdfPagesToOptimizedJpeg(file) {
     var arrayBuffer = await file.arrayBuffer();
     var pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    var page = await pdf.getPage(1);
-    
-    var unscaled = page.getViewport({ scale: 1.0 });
-    var scale = 800 / unscaled.width;
-    var viewport = page.getViewport({ scale: scale });
+    var totalPages = pdf.numPages;
+    logStatus('PDF（全 ' + totalPages + ' ページ）を処理中...');
 
-    var canvas = document.createElement('canvas');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    var ctx = canvas.getContext('2d');
+    var renderedPages = [];
+    var targetWidth = 800;
+    var totalHeight = 0;
 
-    await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+    for (var pageNum = 1; pageNum <= totalPages; pageNum++) {
+      var page = await pdf.getPage(pageNum);
+      var unscaled = page.getViewport({ scale: 1.0 });
+      var scale = targetWidth / unscaled.width;
+      var viewport = page.getViewport({ scale: scale });
+
+      var pageCanvas = document.createElement('canvas');
+      pageCanvas.width = viewport.width;
+      pageCanvas.height = viewport.height;
+      var pCtx = pageCanvas.getContext('2d');
+      await page.render({ canvasContext: pCtx, viewport: viewport }).promise;
+
+      renderedPages.push(pageCanvas);
+      totalHeight += viewport.height;
+    }
+
+    var combinedCanvas = document.createElement('canvas');
+    combinedCanvas.width = targetWidth;
+    combinedCanvas.height = totalHeight;
+    var cCtx = combinedCanvas.getContext('2d');
+
+    var currentY = 0;
+    renderedPages.forEach(function(pCanvas) {
+      cCtx.drawImage(pCanvas, 0, currentY);
+      currentY += pCanvas.height;
+    });
 
     return new Promise(function(resolve) {
-      canvas.toBlob(function(blob) {
+      combinedCanvas.toBlob(function(blob) {
         var reader = new FileReader();
         reader.onload = function() { resolve(reader.result.split(',')[1]); };
         reader.readAsDataURL(blob);
@@ -249,34 +271,45 @@
     });
   }
 
-  // APIキーから利用可能なモデル一覧を動的に取得する
+  // 画像解析が確実に動作するモデルのみを厳選・優先順位付け
   async function fetchAvailableModels(apiKey) {
     try {
       var res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?key=' + apiKey);
-      if (!res.ok) throw new Error('モデル一覧取得失敗 (' + res.status + ')');
+      if (!res.ok) throw new Error('一覧取得失敗 (' + res.status + ')');
       var data = await res.json();
       if (!data.models) return [];
 
-      // generateContent に対応しているモデルを抽出
       var valid = data.models
         .filter(function(m) {
+          var name = m.name.toLowerCase();
+          // 音声専用、埋め込み、画像生成などを除外
+          if (name.includes('tts') || name.includes('embedding') || name.includes('imagen') || name.includes('aqa')) {
+            return false;
+          }
           return m.supportedGenerationMethods && m.supportedGenerationMethods.includes('generateContent');
         })
         .map(function(m) {
           return m.name.replace(/^models\//, '');
         });
 
-      // 高速な Flash 系を先頭に、次に Pro 系が来るよう優先順位ソート
+      // 安定実績のあるモデルを優先
       valid.sort(function(a, b) {
-        var scoreA = (a.includes('flash-latest') ? 10 : a.includes('flash') ? 8 : a.includes('pro') ? 4 : 1);
-        var scoreB = (b.includes('flash-latest') ? 10 : b.includes('flash') ? 8 : b.includes('pro') ? 4 : 1);
-        return scoreB - scoreA;
+        function getScore(name) {
+          if (name === 'gemini-flash-lite-latest') return 100;
+          if (name === 'gemini-flash-latest') return 90;
+          if (name.includes('flash-lite')) return 80;
+          if (name.includes('flash') && !name.includes('preview')) return 70;
+          if (name.includes('flash')) return 60;
+          if (name.includes('pro')) return 40;
+          return 10;
+        }
+        return getScore(b) - getScore(a);
       });
 
       return valid;
     } catch (err) {
       console.warn('動的モデル取得エラー:', err);
-      return ['gemini-flash-latest']; // 万一のフォールバック
+      return ['gemini-flash-lite-latest', 'gemini-flash-latest'];
     }
   }
 
@@ -297,8 +330,7 @@
       var mimeType = 'image/jpeg';
 
       if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
-        logStatus('PDFを軽量画像に最適化中...');
-        base64Data = await renderPdfToOptimizedJpeg(file);
+        base64Data = await renderAllPdfPagesToOptimizedJpeg(file);
       } else {
         base64Data = await fileToBase64(file);
         mimeType = file.type || 'image/jpeg';
@@ -311,12 +343,12 @@
   }
 
   async function executeAnalysis(base64Data, mimeType, apiKey, startTime) {
-    logStatus('利用可能なGeminiモデルを自動検索中...');
+    logStatus('マルチモーダル対応モデルを検索中...');
     var candidateModels = await fetchAvailableModels(apiKey);
-    logStatus('候補モデル (' + candidateModels.length + '件) を検出: ' + candidateModels.slice(0, 3).join(', ') + '...');
+    logStatus('有効モデル (' + candidateModels.length + '件): ' + candidateModels.slice(0, 3).join(', ') + '...');
 
     var promptText = [
-      '添付の領収書・請求書画像を解析し、以下の項目を正確にJSON形式で抽出してください。',
+      '添付の領収書・請求書画像（複数ページ連結を含む）を解析し、含まれるすべての明細・支払いを漏れなくJSON形式で抽出してください。',
       '抽出項目: purchase_date (YYYY-MM-DD), account_category, payee, summary, tax_category ("内","外","非課税","不課税"), tax_rate, tax_amount (数値), amount_excl_tax (数値), amount_incl_tax (数値)',
       '必ず以下の純粋なJSONのみを出力してください:',
       '{"items":[{"purchase_date":"2026-07-31","account_category":"通信費","payee":"Google Asia Pacific Pte. Ltd.","summary":"Google Workspace","tax_category":"外","tax_rate":"10%","tax_amount":160,"amount_excl_tax":1600,"amount_incl_tax":1760}]}'
@@ -347,8 +379,8 @@
         if (!response.ok) {
           var is503 = response.status === 503;
           var is429 = response.status === 429;
-          logStatus('[' + model + '] 応答エラー (' + response.status + ')' + (is503 ? ' 需要過多' : is429 ? ' 制限' : ''), true);
-          await new Promise(function(r) { setTimeout(r, 1200); });
+          logStatus('[' + model + '] エラー (' + response.status + ')' + (is503 ? ' 需要過多' : is429 ? ' 制限' : ''), true);
+          await new Promise(function(r) { setTimeout(r, 1000); });
           continue;
         }
 
