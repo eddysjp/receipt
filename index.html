@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>領収書・レシート解析</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    if (window.pdfjsLib) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+  </script>
+  <style>
+    :root {
+      --primary: #4361ee;
+      --primary-hover: #3a56d4;
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --border: #cbd5e1;
+      --text: #1e293b;
+      --text-muted: #64748b;
+      --error: #ef4444;
+      --success: #10b981;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 20px;
+    }
+    .container { max-width: 960px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+    header {
+      display: flex; justify-content: space-between; align-items: center;
+      background: var(--card-bg); padding: 16px 20px; border-radius: 12px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid var(--border);
+    }
+    h1 { font-size: 1.25rem; font-weight: 700; color: var(--primary); }
+    .api-config { display: flex; gap: 8px; align-items: center; }
+    .api-config input { padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 0.85rem; width: 240px; }
+    .dropzone {
+      border: 2px dashed #94a3b8; border-radius: 16px; padding: 36px 20px;
+      text-align: center; background: var(--card-bg); cursor: pointer; transition: all 0.2s ease;
+    }
+    .dropzone.dragover { border-color: var(--primary); background: #eff6ff; }
+    .dropzone-text { color: var(--text-muted); margin-bottom: 24px; font-size: 1rem; }
+    .btn-group { display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 12px 24px; font-size: 1rem; font-weight: 600; color: #ffffff !important;
+      background-color: var(--primary); border: none; border-radius: 8px; cursor: pointer;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: background 0.2s;
+    }
+    .btn:hover { background-color: var(--primary-hover); }
+    .btn-secondary { background-color: #475569; }
+    .btn-secondary:hover { background-color: #334155; }
+    .btn-outline { background: #ffffff; border: 1px solid var(--border); color: var(--text) !important; box-shadow: none; }
+    .btn-outline:hover { background: #f1f5f9; }
+    .status-card { background: var(--card-bg); padding: 16px; border-radius: 12px; border: 1px solid var(--border); display: none; }
+    .status-card.active { display: block; }
+    .status-msg { font-size: 0.85rem; color: var(--text-muted); word-break: break-all; max-height: 180px; overflow-y: auto; font-family: monospace; white-space: pre-wrap; }
+    .status-msg.error { color: var(--error); }
+    .status-msg.success { color: var(--success); font-weight: 600; }
+    .result-section { background: var(--card-bg); border-radius: 12px; padding: 20px; border: 1px solid var(--border); display: none; }
+    .result-section.active { display: block; }
+    .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
+    .table-container { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 16px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; text-align: left; white-space: nowrap; }
+    th, td { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+    th { background: #f8fafc; font-weight: 600; color: var(--text-muted); }
+    td[contenteditable="true"] { background: #ffffff; outline: none; }
+    td[contenteditable="true"]:focus { background: #eff6ff; }
+    .toast {
+      position: fixed; bottom: 24px; right: 24px; background: #1e293b; color: white;
+      padding: 10px 18px; border-radius: 8px; font-size: 0.85rem; opacity: 0; pointer-events: none; transition: opacity 0.3s; z-index: 999;
+    }
+    .toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>領収書・レシート解析</h1>
+    <div class="api-config">
+      <input type="password" id="apiKeyInput" placeholder="Gemini API Key を入力" />
+      <button type="button" class="btn btn-outline" id="saveKeyBtn" style="padding: 8px 16px; font-size: 0.85rem;">保存</button>
+    </div>
+  </header>
+
+  <div class="dropzone" id="dropzone">
+    <div class="dropzone-text">
+      <strong>領収書・レシートの画像またはPDFを指定</strong><br>
+      ドラッグ＆ドロップ、または下のボタンから選択
+    </div>
+    <div class="btn-group">
+      <label class="btn" style="cursor: pointer;">
+        📷 カメラで撮影
+        <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none;">
+      </label>
+      <label class="btn btn-secondary" style="cursor: pointer;">
+        📁 ファイルを選択
+        <input type="file" id="fileInput" accept="image/*,application/pdf" style="display:none;">
+      </label>
+    </div>
+  </div>
+
+  <div class="status-card" id="statusCard">
+    <div class="status-msg" id="statusMsg">処理を開始します...</div>
+  </div>
+
+  <div class="result-section" id="resultSection">
+    <div class="result-header">
+      <div>
+        <h2 style="font-size: 1.1rem; font-weight: 700;">解析結果</h2>
+        <span id="usedModelLabel" style="font-size: 0.75rem; color: var(--text-muted);">使用モデル: -</span>
+      </div>
+      <div class="btn-group">
+        <button type="button" class="btn btn-outline" id="copyTsvBtn">📋 表をコピー (Excel用)</button>
+        <button type="button" class="btn btn-outline" id="copyJsonBtn">JSONコピー</button>
+      </div>
+    </div>
+
+    <div class="table-container">
+      <table id="resultTable">
+        <thead>
+          <tr>
+            <th>購入日</th>
+            <th>科目案</th>
+            <th>支払先</th>
+            <th>摘要</th>
+            <th>税区分</th>
+            <th>税率</th>
+            <th>消費税額</th>
+            <th>税抜金額</th>
+            <th>税込金額</th>
+          </tr>
+        </thead>
+        <tbody id="resultTbody"></tbody>
+      </table>
+    </div>
+    <p style="font-size: 0.75rem; color: var(--text-muted);">※セルをクリックして手動編集が可能です。</p>
+  </div>
+</div>
+
+<div class="toast" id="toast">コピーしました</div>
+
+<script>
+  var apiKeyInput = document.getElementById('apiKeyInput');
+  var saveKeyBtn = document.getElementById('saveKeyBtn');
+  var dropzone = document.getElementById('dropzone');
+  var cameraInput = document.getElementById('cameraInput');
+  var fileInput = document.getElementById('fileInput');
+  var statusCard = document.getElementById('statusCard');
+  var statusMsg = document.getElementById('statusMsg');
+  var resultSection = document.getElementById('resultSection');
+  var resultTbody = document.getElementById('resultTbody');
+  var usedModelLabel = document.getElementById('usedModelLabel');
+  var copyTsvBtn = document.getElementById('copyTsvBtn');
+  var copyJsonBtn = document.getElementById('copyJsonBtn');
+  var toast = document.getElementById('toast');
+
+  var memoryApiKey = '';
+
+  // 成功実績のあるモデルを先頭にし、無駄な待機時間を排除
+  var PREFERRED_MODELS = [
+    'gemini-flash-latest',
+    'gemini-1.5-flash',
+    'gemini-2.0-flash'
+  ];
+
+  try {
+    var savedKey = localStorage.getItem('gemini_receipt_api_key');
+    if (savedKey) {
+      apiKeyInput.value = savedKey;
+      memoryApiKey = savedKey;
+    }
+  } catch (e) {
+    console.warn('localStorage制限:', e);
+  }
+
+  saveKeyBtn.addEventListener('click', function() { saveApiKey(); });
+  apiKeyInput.addEventListener('keypress', function(e) { if (e.key === 'Enter') saveApiKey(); });
+
+  function saveApiKey() {
+    var key = apiKeyInput.value.trim();
+    if (!key) { showToast('APIキーを入力してください'); return; }
+    memoryApiKey = key;
+    try {
+      localStorage.setItem('gemini_receipt_api_key', key);
+      showToast('APIキーを保存しました');
+    } catch (e) {
+      showToast('一時保持しました');
+    }
+  }
+
+  function getCurrentApiKey() { return apiKeyInput.value.trim() || memoryApiKey; }
+
+  dropzone.addEventListener('dragover', function(e) { e.preventDefault(); dropzone.classList.add('dragover'); });
+  dropzone.addEventListener('dragleave', function() { dropzone.classList.remove('dragover'); });
+  dropzone.addEventListener('drop', function(e) {
+    e.preventDefault(); dropzone.classList.remove('dragover');
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+  });
+
+  cameraInput.addEventListener('change', function(e) { if (e.target.files && e.target.files[0]) handleFile(e.target.files[0]); });
+  fileInput.addEventListener('change', function(e) { if (e.target.files && e.target.files[0]) handleFile(e.target.files[0]); });
+
+  var logHistory = [];
+  function logStatus(text, isError) {
+    statusCard.classList.add('active');
+    logHistory.push((isError ? '❌ ' : 'ℹ️ ') + text);
+    statusMsg.className = 'status-msg' + (isError ? ' error' : '');
+    statusMsg.innerText = logHistory.join('\n');
+    statusMsg.scrollTop = statusMsg.scrollHeight;
+  }
+
+  function showToast(text) {
+    toast.innerText = text;
+    toast.classList.add('show');
+    setTimeout(function() { toast.classList.remove('show'); }, 2000);
+  }
+
+  function fileToBase64(file) {
+    return new Promise(function(resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function() { resolve(reader.result.split(',')[1]); };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function renderPdfToOptimizedJpeg(file) {
+    var arrayBuffer = await file.arrayBuffer();
+    var pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    var page = await pdf.getPage(1);
+    
+    var unscaled = page.getViewport({ scale: 1.0 });
+    var scale = 800 / unscaled.width;
+    var viewport = page.getViewport({ scale: scale });
+
+    var canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    var ctx = canvas.getContext('2d');
+
+    await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+
+    return new Promise(function(resolve) {
+      canvas.toBlob(function(blob) {
+        var reader = new FileReader();
+        reader.onload = function() { resolve(reader.result.split(',')[1]); };
+        reader.readAsDataURL(blob);
+      }, 'image/jpeg', 0.65);
+    });
+  }
+
+  async function handleFile(file) {
+    var apiKey = getCurrentApiKey();
+    if (!apiKey) {
+      logStatus('APIキーを入力してください。', true);
+      apiKeyInput.focus();
+      return;
+    }
+
+    logHistory = [];
+    var startTime = Date.now();
+    logStatus(file.name + ' の解析を開始します');
+
+    try {
+      var base64Data = '';
+      var mimeType = 'image/jpeg';
+
+      if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
+        logStatus('PDFを軽量画像に最適化中...');
+        base64Data = await renderPdfToOptimizedJpeg(file);
+      } else {
+        base64Data = await fileToBase64(file);
+        mimeType = file.type || 'image/jpeg';
+      }
+
+      await executeAnalysis(base64Data, mimeType, apiKey, startTime);
+    } catch (err) {
+      logStatus('最終エラー: ' + err.message, true);
+    }
+  }
+
+  async function executeAnalysis(base64Data, mimeType, apiKey, startTime) {
+    var promptText = [
+      '添付の領収書・請求書画像を解析し、以下の項目を正確にJSON形式で抽出してください。',
+      '抽出項目: purchase_date (YYYY-MM-DD), account_category, payee, summary, tax_category ("内","外","非課税","不課税"), tax_rate, tax_amount (数値), amount_excl_tax (数値), amount_incl_tax (数値)',
+      '必ず以下の純粋なJSONのみを出力してください:',
+      '{"items":[{"purchase_date":"2026-07-31","account_category":"通信費","payee":"Google Asia Pacific Pte. Ltd.","summary":"Google Workspace","tax_category":"外","tax_rate":"10%","tax_amount":160,"amount_excl_tax":1600,"amount_incl_tax":1760}]}'
+    ].join('\n');
+
+    for (var i = 0; i < PREFERRED_MODELS.length; i++) {
+      var model = PREFERRED_MODELS[i];
+      logStatus('モデル [' + model + '] にリクエスト送信中...');
+
+      try {
+        var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + apiKey;
+        var response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: promptText },
+                { inline_data: { mime_type: mimeType, data: base64Data } }
+              ]
+            }],
+            generationConfig: {
+              response_mime_type: 'application/json'
+            }
+          })
+        });
+
+        if (!response.ok) {
+          var is503 = response.status === 503;
+          var is429 = response.status === 429;
+          logStatus('[' + model + '] 応答エラー (' + response.status + ')' + (is503 ? ' 需要過多' : is429 ? ' 制限' : ''), true);
+          await new Promise(function(r) { setTimeout(r, 1000); });
+          continue;
+        }
+
+        var data = await response.json();
+        var textContent = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
+        if (!textContent) {
+          logStatus('[' + model + '] 結果が空でした', true);
+          continue;
+        }
+
+        var parsed = JSON.parse(textContent);
+        renderTable(parsed.items || []);
+        var elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+        logStatus('🎉 成功! 使用モデル: ' + model + '（所要時間: ' + elapsedSec + '秒）');
+        usedModelLabel.innerText = '使用モデル: ' + model;
+        return;
+      } catch (err) {
+        logStatus('[' + model + '] 通信失敗: ' + err.message, true);
+      }
+    }
+
+    throw new Error('すべての候補モデルでエラーが発生しました。時間を置いて再試行してください。');
+  }
+
+  function renderTable(items) {
+    resultTbody.innerHTML = '';
+    if (!items || items.length === 0) {
+      resultTbody.innerHTML = '<tr><td colspan="9" style="text-align:center;">データを読み取れませんでした。</td></tr>';
+      resultSection.classList.add('active');
+      return;
+    }
+
+    items.forEach(function(item) {
+      var tr = document.createElement('tr');
+      tr.innerHTML = [
+        '<td contenteditable="true">' + (item.purchase_date || '') + '</td>',
+        '<td contenteditable="true">' + (item.account_category || '') + '</td>',
+        '<td contenteditable="true">' + (item.payee || '') + '</td>',
+        '<td contenteditable="true">' + (item.summary || '') + '</td>',
+        '<td contenteditable="true">' + (item.tax_category || '') + '</td>',
+        '<td contenteditable="true">' + (item.tax_rate || '') + '</td>',
+        '<td contenteditable="true" style="text-align:right;">' + (item.tax_amount != null ? Number(item.tax_amount).toLocaleString() : '') + '</td>',
+        '<td contenteditable="true" style="text-align:right;">' + (item.amount_excl_tax != null ? Number(item.amount_excl_tax).toLocaleString() : '') + '</td>',
+        '<td contenteditable="true" style="text-align:right;">' + (item.amount_incl_tax != null ? Number(item.amount_incl_tax).toLocaleString() : '') + '</td>'
+      ].join('');
+      resultTbody.appendChild(tr);
+    });
+
+    resultSection.classList.add('active');
+  }
+
+  copyTsvBtn.addEventListener('click', function() {
+    var rows = Array.from(resultTbody.querySelectorAll('tr'));
+    if (!rows.length) return;
+    var headers = ['購入日', '科目案', '支払先', '摘要', '税区分', '税率', '消費税額', '税抜金額', '税込金額'];
+    var tsvRows = [headers.join('\t')];
+    rows.forEach(function(tr) {
+      var cells = Array.from(tr.querySelectorAll('td')).map(function(td) { return td.innerText.replace(/[\t\n\r]/g, ' ').trim(); });
+      tsvRows.push(cells.join('\t'));
+    });
+    copyToClipboard(tsvRows.join('\n'));
+    showToast('TSV形式でコピーしました（Excel貼付可）');
+  });
+
+  copyJsonBtn.addEventListener('click', function() {
+    var rows = Array.from(resultTbody.querySelectorAll('tr'));
+    if (!rows.length) return;
+    var headers = ['purchase_date', 'account_category', 'payee', 'summary', 'tax_category', 'tax_rate', 'tax_amount', 'amount_excl_tax', 'amount_incl_tax'];
+    var data = rows.map(function(tr) {
+      var cells = Array.from(tr.querySelectorAll('td')).map(function(td) { return td.innerText.trim(); });
+      var obj = {};
+      headers.forEach(function(h, i) { obj[h] = cells[i] || ''; });
+      return obj;
+    });
+    copyToClipboard(JSON.stringify(data, null, 2));
+    showToast('JSON形式でコピーしました');
+  });
+
+  function copyToClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text);
+    } else {
+      var textarea = document.createElement('textarea');
+      textarea.value = text;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+  }
+</script>
+</body>
+</html>
