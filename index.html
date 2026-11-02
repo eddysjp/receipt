@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>領収書・レシート解析</title>
+  <title>領収書・レシート解析 Ver 1.1</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
     if (window.pdfjsLib) {
@@ -59,7 +59,7 @@
     .btn-outline:hover { background: #f1f5f9; }
     .status-card { background: var(--card-bg); padding: 16px; border-radius: 12px; border: 1px solid var(--border); display: none; }
     .status-card.active { display: block; }
-    .status-msg { font-size: 0.85rem; color: var(--text-muted); word-break: break-all; max-height: 180px; overflow-y: auto; font-family: monospace; white-space: pre-wrap; }
+    .status-msg { font-size: 0.85rem; color: var(--text-muted); word-break: break-all; max-height: 200px; overflow-y: auto; font-family: monospace; white-space: pre-wrap; }
     .status-msg.error { color: var(--error); }
     .status-msg.success { color: var(--success); font-weight: 600; }
     .result-section { background: var(--card-bg); border-radius: 12px; padding: 20px; border: 1px solid var(--border); display: none; }
@@ -82,8 +82,7 @@
 
 <div class="container">
   <header>
-<!-- 変更例 -->
-<h1>領収書・レシート解析 <span style="font-size: 0.8rem; font-weight: normal; color: var(--text-muted);">Ver 1.1</span></h1>
+    <h1>領収書・レシート解析 <span style="font-size: 0.8rem; font-weight: normal; color: var(--text-muted);">Ver 1.1</span></h1>
     <div class="api-config">
       <input type="password" id="apiKeyInput" placeholder="Gemini API Key を入力" />
       <button type="button" class="btn btn-outline" id="saveKeyBtn" style="padding: 8px 16px; font-size: 0.85rem;">保存</button>
@@ -163,13 +162,6 @@
   var toast = document.getElementById('toast');
 
   var memoryApiKey = '';
-
-  // 成功実績のあるモデルを先頭にし、無駄な待機時間を排除
-  var PREFERRED_MODELS = [
-    'gemini-flash-latest',
-    'gemini-1.5-flash',
-    'gemini-2.0-flash'
-  ];
 
   try {
     var savedKey = localStorage.getItem('gemini_receipt_api_key');
@@ -257,6 +249,37 @@
     });
   }
 
+  // APIキーから利用可能なモデル一覧を動的に取得する
+  async function fetchAvailableModels(apiKey) {
+    try {
+      var res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?key=' + apiKey);
+      if (!res.ok) throw new Error('モデル一覧取得失敗 (' + res.status + ')');
+      var data = await res.json();
+      if (!data.models) return [];
+
+      // generateContent に対応しているモデルを抽出
+      var valid = data.models
+        .filter(function(m) {
+          return m.supportedGenerationMethods && m.supportedGenerationMethods.includes('generateContent');
+        })
+        .map(function(m) {
+          return m.name.replace(/^models\//, '');
+        });
+
+      // 高速な Flash 系を先頭に、次に Pro 系が来るよう優先順位ソート
+      valid.sort(function(a, b) {
+        var scoreA = (a.includes('flash-latest') ? 10 : a.includes('flash') ? 8 : a.includes('pro') ? 4 : 1);
+        var scoreB = (b.includes('flash-latest') ? 10 : b.includes('flash') ? 8 : b.includes('pro') ? 4 : 1);
+        return scoreB - scoreA;
+      });
+
+      return valid;
+    } catch (err) {
+      console.warn('動的モデル取得エラー:', err);
+      return ['gemini-flash-latest']; // 万一のフォールバック
+    }
+  }
+
   async function handleFile(file) {
     var apiKey = getCurrentApiKey();
     if (!apiKey) {
@@ -288,6 +311,10 @@
   }
 
   async function executeAnalysis(base64Data, mimeType, apiKey, startTime) {
+    logStatus('利用可能なGeminiモデルを自動検索中...');
+    var candidateModels = await fetchAvailableModels(apiKey);
+    logStatus('候補モデル (' + candidateModels.length + '件) を検出: ' + candidateModels.slice(0, 3).join(', ') + '...');
+
     var promptText = [
       '添付の領収書・請求書画像を解析し、以下の項目を正確にJSON形式で抽出してください。',
       '抽出項目: purchase_date (YYYY-MM-DD), account_category, payee, summary, tax_category ("内","外","非課税","不課税"), tax_rate, tax_amount (数値), amount_excl_tax (数値), amount_incl_tax (数値)',
@@ -295,8 +322,8 @@
       '{"items":[{"purchase_date":"2026-07-31","account_category":"通信費","payee":"Google Asia Pacific Pte. Ltd.","summary":"Google Workspace","tax_category":"外","tax_rate":"10%","tax_amount":160,"amount_excl_tax":1600,"amount_incl_tax":1760}]}'
     ].join('\n');
 
-    for (var i = 0; i < PREFERRED_MODELS.length; i++) {
-      var model = PREFERRED_MODELS[i];
+    for (var i = 0; i < candidateModels.length; i++) {
+      var model = candidateModels[i];
       logStatus('モデル [' + model + '] にリクエスト送信中...');
 
       try {
@@ -321,7 +348,7 @@
           var is503 = response.status === 503;
           var is429 = response.status === 429;
           logStatus('[' + model + '] 応答エラー (' + response.status + ')' + (is503 ? ' 需要過多' : is429 ? ' 制限' : ''), true);
-          await new Promise(function(r) { setTimeout(r, 1000); });
+          await new Promise(function(r) { setTimeout(r, 1200); });
           continue;
         }
 
@@ -343,7 +370,7 @@
       }
     }
 
-    throw new Error('すべての候補モデルでエラーが発生しました。時間を置いて再試行してください。');
+    throw new Error('すべての利用可能モデルでエラーが発生しました。時間を置いて再試行してください。');
   }
 
   function renderTable(items) {
