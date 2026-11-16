@@ -119,7 +119,7 @@
 
 <div class="container">
   <header>
-    <h1>領収書・レシート解析 <span style="font-size: 0.8rem; font-weight: normal; color: var(--text-muted);">Ver 1.2</span></h1>
+    <h1>領収書・レシート解析 <span style="font-size: 0.8rem; font-weight: normal; color: var(--text-muted);">Ver 1.3</span></h1>
     <div class="api-config">
       <input type="password" id="apiKeyInput" placeholder="Gemini API Key を入力" />
       <button type="button" class="btn btn-outline" id="saveKeyBtn" style="padding: 8px 16px; font-size: 0.85rem;">保存</button>
@@ -269,7 +269,7 @@
     logStatus('PDF（全 ' + totalPages + ' ページ）を処理中...');
 
     var renderedPages = [];
-    var targetWidth = 800;
+    var targetWidth = 1400;
     var totalHeight = 0;
 
     for (var pageNum = 1; pageNum <= totalPages; pageNum++) {
@@ -304,7 +304,7 @@
         var reader = new FileReader();
         reader.onload = function() { resolve(reader.result.split(',')[1]); };
         reader.readAsDataURL(blob);
-      }, 'image/jpeg', 0.65);
+      }, 'image/jpeg', 0.80);
     });
   }
 
@@ -385,7 +385,8 @@
     logStatus('有効モデル (' + candidateModels.length + '件): ' + candidateModels.slice(0, 3).join(', ') + '...');
 
     var promptText = [
-      '添付の領収書・請求書画像（複数ページ連結を含む）を解析し、含まれるすべての明細・支払いを漏れなくJSON形式で抽出してください。',
+      '添付の領収書・請求書・ETC利用明細・各種利用明細書の画像（複数ページ連結を含む）を解析し、含まれるすべての利用明細・支払いを漏れなくJSON形式で抽出してください。',
+      '※ETC利用明細の場合は、各利用日ごとの通行料金（高速道路料金・旅費交通費）を1行ずつ抽出するか、明細が読み取りづらい場合は利用年月日と合計金額を抽出してください。支払先は高速道路会社（NEXCO西日本、ETC利用照会サービス等）、摘要には利用区間（IC名）や「ETC利用料」を記載してください。',      
       '抽出項目: purchase_date (YYYY-MM-DD), account_category, payee, summary, tax_category ("内","外","非課税","不課税"), tax_rate, tax_amount (数値), amount_excl_tax (数値), amount_incl_tax (数値)',
       '必ず以下の純粋なJSONのみを出力してください:',
       '{"items":[{"purchase_date":"2026-07-31","account_category":"通信費","payee":"Google Asia Pacific Pte. Ltd.","summary":"Google Workspace","tax_category":"外","tax_rate":"10%","tax_amount":160,"amount_excl_tax":1600,"amount_incl_tax":1760}]}'
